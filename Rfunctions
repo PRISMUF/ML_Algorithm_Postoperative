@@ -1,0 +1,370 @@
+# User defined Functions 
+
+data_pre_processing <- function(raw_data,sel_features,response){
+  proc_data <- raw_data[,which(colnames(raw_data)%in%sel_features[,1])] ; proc_data$outcome <- response
+  for (i in 1:nrow(sel_features)){
+    j <- which(colnames(proc_data)==sel_features[i,1])
+    if (length(unique(proc_data[,j]))<2)
+      next  
+    if ((sel_features[i,2] == "num") && sum(is.na(proc_data[, j]))>0) {
+      # correct numerical missing values
+      rnd <- 2
+      if(mean(proc_data[,j],na.rm = TRUE)>5)
+        rnd <- 1
+      l <- sum(is.na(proc_data[, j])) ; 
+      if(l>0){
+        temp <- round(runif(n = l,min = quantile(proc_data[,j],probs = 0.25,na.rm = TRUE),max = quantile(proc_data[,j],probs = 0.75,na.rm = TRUE)),rnd)
+        proc_data[is.na(proc_data[,j]),j]<- temp ; next
+      }
+    }
+    
+    if (sel_features[i,1] == "pr1" || sel_features[i,1] == "pr2"){       # correct pr1 missing value (surgincal procedures)
+      d<-TrainProcedureFeature(proc_data[,j], response_matrix[,entry], 100)
+      proc_data[,j]<-d$procedures
+    }      
+    if (sel_features[i,2] == "cat" && length(unique(proc_data[,j]))<=5){
+      if(sum(is.na(proc_data[,j]))>0){
+        levels(proc_data[,j]) <- c(levels(proc_data[,j]),"MISSING")
+        proc_data[is.na(proc_data[,j]),j]<- "MISSING" # correct categorical missing values with less than 10 levels
+        proc_data[,j] <- as.factor(proc_data[,j])
+      }else{
+        proc_data[,j] <- as.factor(proc_data[,j])
+      }
+      
+    } else if (sel_features[i,2] == "cat" && length(unique(proc_data[,j]))>5){   # correct categorical missing values
+       d<-TrainCategoricalFeature(proc_data[,j], response_matrix[,entry], 100, 2)          
+       proc_data[,j]<-d$d  
+    }
+  }
+  return(proc_data)
+}
+
+
+TrainProcedureFeature <-function(data, outcome, limit){
+  lowlim<- c(100, 101, 106, 108, 117, 118, 121, 130, 135, 140, 142, 155, 160, 165, 172, 176, 185, 187)
+  
+  procedures<-rep(0, times = length(data))
+  
+  groups<-data.frame(matrix(rep(0, times = 20000*2),ncol = 2))
+  
+  for (i in 1:length(data))
+  {
+    if (is.na(data[i]))
+      data[i]<-"00"	
+    s<-as.character(data[i])
+    for (k in nchar(s):-1:2)
+    {
+      j<-as.numeric(paste("1", substr(s,1,k), sep = ""))
+      if (outcome[i] == 1)
+        groups[j,1]<-groups[j,1]+1
+      else
+        groups[j,2]<-groups[j,2]+1		
+    }
+    num<-as.numeric(paste("1", substr(s,1,2), sep = ""))
+    for (j in (length(lowlim)+1):-1:2)
+    {
+      if (num >= lowlim[j-1])
+      {
+        if (outcome[i] == 1)
+          groups[j,1]<-groups[j,1]+1
+        else
+          groups[j,2]<-groups[j,2]+1
+        break
+      }
+    }	
+  }
+  
+  for (i in 2:(length(lowlim)+1))
+  {
+    if (groups[i,1]+groups[i,2] < limit)
+    {
+      groups[1,1] = groups[1,1]+groups[i,1];
+      groups[1,2] = groups[1,2]+groups[i,2];
+      groups[i,1] = 0;
+      groups[i,2] = 0;
+      
+    }
+  }
+  
+  for (i in 1:length(data))
+  {
+    flag<-0
+    k<-0
+    s<-as.character(data[i])
+    while (k <= nchar(s) - 2)
+    {
+      ind<-as.numeric(paste("1", substr(s,1,(nchar(s) - k)),sep = ""))
+      if (groups[ind,1]+groups[ind,2] >= limit)
+      {
+        if (groups[ind,1] == 0)
+        {
+          procedures[i]<-log(1/(2*groups[ind,2]))
+        }
+        else if (groups[ind,2] == 0)
+        {
+          procedures[i]<-log(2*groups[ind,1])
+        }
+        else
+        {
+          procedures[i] = log(groups[ind,1]/groups[ind,2]); 
+        }
+        flag<-1
+        break	
+      }
+      k<-k+1
+    }
+    if (flag == 0)
+    {
+      q<-as.numeric(paste("1", substr(s,1,2), sep = ""))
+      for (j in (length(lowlim)+1):-1:2)
+      {
+        if (q >= lowlim[j-1])
+        {
+          if (groups[j,1]+groups[j,2] > 0)
+          {
+            if (groups[j,1] == 0)
+            {
+              procedures[i]<-log(1/(2*groups[j,2]))
+            }
+            else if (groups[j,2] == 0)
+            {
+              procedures[i]<-log(2*groups[j,1])
+            }
+            else
+            {
+              procedures[i] = log(groups[j,1]/groups[j,2]); 
+            }
+            
+          }
+          else
+          {
+            if (groups[1,1] == 0)
+            {
+              procedures[i]<-log(1/(2*groups[1,2]))
+            }
+            else if (groups[1,2] == 0)
+            {
+              procedures[i]<-log(2*groups[1,1])
+            }
+            else
+            {
+              procedures[i] = log(groups[1,1]/groups[1,2]); 
+            }
+            
+          }
+          break
+        }
+      }
+    }
+  }
+  output<-list("procedures" = procedures, "groups" = groups)
+}
+
+GetProcedureFeature <-function(data, groups, limit){
+  lowlim<- c(100, 101, 106, 108, 117, 118, 121, 130, 135, 140, 142, 155, 160, 165, 172, 176, 185, 187)
+  
+  procedures<-rep(0, times = length(data))
+  for (i in 1:length(data))
+  {
+    if(is.na(data[i]))
+      data[i]<-"00"
+    
+    flag<-0
+    k<-0
+    s<-as.character(data[i])
+    while (k <= nchar(s) - 2)
+    {
+      ind<-as.numeric(paste("1", substr(s,1,(nchar(s) - k)),sep = ""))
+      if (groups[ind,1]+groups[ind,2] >= limit)
+      {
+        if (groups[ind,1] == 0)
+        {
+          procedures[i]<-log(1/(2*groups[ind,2]))
+        }
+        else if (groups[ind,2] == 0)
+        {
+          procedures[i]<-log(2*groups[ind,1])
+        }
+        else
+        {
+          procedures[i] = log(groups[ind,1]/groups[ind,2]); 
+        }
+        flag<-1
+        break	
+      }
+      k<-k+1
+    }
+    if (flag == 0)
+    {
+      q<-as.numeric(paste("1", substr(s,1,2), sep = ""))
+      for (j in (length(lowlim)+1):-1:2)
+      {
+        if (q >= lowlim[j-1])
+        {
+          if (groups[j,1]+groups[j,2] > 0)
+          {
+            if (groups[j,1] == 0)
+            {
+              procedures[i]<-log(1/(2*groups[j,2]))
+            }
+            else if (groups[j,2] == 0)
+            {
+              procedures[i]<-log(2*groups[j,1])
+            }
+            else
+            {
+              procedures[i] = log(groups[j,1]/groups[j,2]); 
+            }
+            
+          }
+          else
+          {
+            if (groups[1,1] == 0)
+            {
+              procedures[i]<-log(1/(2*groups[1,2]))
+            }
+            else if (groups[1,2] == 0)
+            {
+              procedures[i]<-log(2*groups[1,1])
+            }
+            else
+            {
+              procedures[i] = log(groups[1,1]/groups[1,2]); 
+            }
+            
+          }
+          break
+        }
+      }
+    }
+  }
+  procedures
+  
+}
+
+TrainCategoricalFeature <- function(a, outcome, limit, clusters){
+  if (length(unique(a)) == 2)
+  {
+    vocabulary = unique(a)
+    p = c(0,1)
+    d<-rep(0, length(a))
+    d[a == vocabulary[2]] = 1			
+    return(list("d" = d, "vocabulary" = vocabulary, "p" = p))
+    
+  }	
+  cl_vocabulary<-NULL
+  cl_p<-NULL	
+  vocabulary1<-unique(a) 	
+  count1<-rep(0, times  = length(vocabulary1))
+  count2<-rep(0, times  = length(vocabulary1))	
+  for (i in 1:length(vocabulary1))
+  {
+    if (is.na(vocabulary1[i]))
+    {
+      count1[i]<-sum((is.na(a))*(outcome==1))
+      count2[i]<-sum((is.na(a))*(outcome==0))} else
+      {
+        count1[i]<-sum((a[!is.na(a)] == vocabulary1[i])*(outcome[!is.na(a)] == 1))
+        count2[i]<-sum((a[!is.na(a)] == vocabulary1[i])*(outcome[!is.na(a)] == 0))}
+    
+  }
+  condition<-(count1+count2>=limit)
+  condition[which(is.na(vocabulary1))]<-TRUE	
+  index<-sum(condition)
+  vocabulary<-(1:index)
+  p<-rep(0, times  = length(vocabulary))
+  index<-0
+  for (i in (1:length(vocabulary1)))
+  {
+    
+    if (count1[i]+count2[i]>=limit || is.na(vocabulary1[i]))
+    {
+      index<-index+1
+      vocabulary[index]<-as.character(vocabulary1[i])
+      if (count1[i] ==0 )
+        p[index]<-log(1/(2*count2[i]))
+      else if (count2[i] == 0)
+        p[index]<-log(2*count1[i])
+      else
+        p[index]<-log(count1[i]/count2[i])
+    }
+  } 
+  if (sum(condition==0)<=1)	
+  {
+    if (sum(condition==0) == 1)
+    {
+      index<-index+1
+      if (count1[which(condition==0)] ==0 )
+        p[index]<-log(1/(2*count2[which(condition==0)]))
+      else if (count2[which(condition==0)] == 0)
+        p[index]<-log(2*count1[which(condition==0)])
+      else
+        p[index]<-log(count1[which(condition==0)]/count2[which(condition==0)])
+      vocabulary[index]<-as.character(vocabulary1[which(condition==0)])
+    }
+    
+  } else
+  {
+    cl<-min(clusters, sum(condition == 0)-1)
+    residual1<-count1[condition == 0]
+    residual2<-count2[condition == 0]
+    s<-matrix(rep(0, times = length(residual1)), ncol = 1)
+    for (i in 1:length(residual1))
+    {
+      if (residual1[i] ==0 )
+        s[i]<-log(1/(2*residual2[i]))
+      else if (residual2[i] == 0)
+        s[i]<-log(2*residual1[i])
+      else
+        s[i]<-log(residual1[i]/residual2[i])
+      
+    }
+    v<-kmeans(s, cl)
+    for (i in (1:cl))	
+    {
+      idx1<-(1:length(condition))[condition == 0]
+      cl_vocabulary<-data.frame(matrix(nrow = sum(condition == 0), ncol = 2))
+      cl_vocabulary[,1]<-as.character(vocabulary1[condition == 0])
+      cl_vocabulary[,2]<-v$cluster			
+      c1<- count1[idx1[v$cluster == i]]
+      c2<- count2[idx1[v$cluster == i]]
+      if (sum(c1) ==0 )
+        cl_p[i]<-log(1/(2*sum(c2)))
+      else if (sum(c2) == 0)
+        cl_p[i]<-log(2*sum(c1))
+      else
+        cl_p[i]<-log(sum(c1)/sum(c2))
+    }
+  }
+  d<-rep(0, times = length(a))
+  d[is.na(a)]<-p[which(is.na(vocabulary))] 
+  for (i in 1:length(vocabulary))
+    d[a==vocabulary[i]]<-p[i]
+  if(!is.null(cl_vocabulary))
+  {
+    for (i in 1:nrow(cl_vocabulary))
+      d[a==cl_vocabulary[i,1]]<-cl_p[cl_vocabulary[i,2]]
+  }
+  
+  output<-list("d" = d, "vocabulary" = vocabulary, "cl_vocabulary" = cl_vocabulary, "p" = p, "cl_p" = cl_p)
+}
+
+GetCategoricalFeature <- function(a, vocabulary, cl_vocabulary, p, cl_p){
+  d<-rep(0, times = length(a))
+  if (length(vocabulary)==2)
+  {
+    d[a==vocabulary[2]]<-1
+    return(d)
+  }
+  
+  for (i in 1:length(vocabulary))
+    d[a == vocabulary[i]]<-p[i]
+  d[is.na(a)]<-p[which(is.na(vocabulary))]
+  if (!is.null(cl_vocabulary))
+  { 
+    for (i in 1:nrow(cl_vocabulary))
+      d[a == cl_vocabulary[i,1]]<-cl_p[cl_vocabulary[i,2]]
+  }
+  
+  return(d)
+}
