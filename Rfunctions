@@ -1,42 +1,44 @@
 # User defined Functions 
 
-data_pre_processing <- function(raw_data,sel_features,response){
-  proc_data <- raw_data[,which(colnames(raw_data)%in%sel_features[,1])] ; proc_data$outcome <- response
-  for (i in 1:nrow(sel_features)){
-    j <- which(colnames(proc_data)==sel_features[i,1])
-    if (length(unique(proc_data[,j]))<2)
-      next  
-    if ((sel_features[i,2] == "num") && sum(is.na(proc_data[, j]))>0) {
-      # correct numerical missing values
-      rnd <- 2
-      if(mean(proc_data[,j],na.rm = TRUE)>5)
-        rnd <- 1
-      l <- sum(is.na(proc_data[, j])) ; 
-      if(l>0){
-        temp <- round(runif(n = l,min = quantile(proc_data[,j],probs = 0.25,na.rm = TRUE),max = quantile(proc_data[,j],probs = 0.75,na.rm = TRUE)),rnd)
-        proc_data[is.na(proc_data[,j]),j]<- temp ; next
-      }
-    }
-    
-    if (sel_features[i,1] == "pr1" || sel_features[i,1] == "pr2"){       # correct pr1 missing value (surgincal procedures)
-      d<-TrainProcedureFeature(proc_data[,j], response_matrix[,entry], 100)
-      proc_data[,j]<-d$procedures
-    }      
-    if (sel_features[i,2] == "cat" && length(unique(proc_data[,j]))<=5){
-      if(sum(is.na(proc_data[,j]))>0){
-        levels(proc_data[,j]) <- c(levels(proc_data[,j]),"MISSING")
-        proc_data[is.na(proc_data[,j]),j]<- "MISSING" # correct categorical missing values with less than 10 levels
-        proc_data[,j] <- as.factor(proc_data[,j])
-      }else{
-        proc_data[,j] <- as.factor(proc_data[,j])
-      }
-      
-    } else if (sel_features[i,2] == "cat" && length(unique(proc_data[,j]))>5){   # correct categorical missing values
-       d<-TrainCategoricalFeature(proc_data[,j], response_matrix[,entry], 100, 2)          
-       proc_data[,j]<-d$d  
-    }
-  }
-  return(proc_data)
+# Funtions that take in data and produce based on various models.
+gams_model <- function(data,formula,family){
+  train_size <- floor(nrow(data)*0.7)
+  train_ind <- sample(1:nrow(data),train_size)
+  test_ind <- setdiff(1:nrow(data),train_ind)
+  prev <- round(sum(data$outcome)/nrow(data),digits=2)
+  
+  train_data <- data[train_ind,]
+  test_data <- data[test_ind,]
+  model <- bam(formula=formula,family=family,data=train_data)
+  pred <- predict(model,newdata=test_data,type="response")
+  perf_out <- measure_peform(pred=pred,obser=test_data$outcome,prev=prev)
+  return(list("model" = model, "Peformance" = perf_out))
+}
+glm_model <- function(data,formula,family){
+  train_size <- floor(nrow(data)*0.7)
+  train_ind <- sample(1:nrow(data),train_size)
+  test_ind <- setdiff(1:nrow(data),train_ind)
+  prev <- round(sum(data$outcome)/nrow(data),digits=2)
+  
+  train_data <- data[train_ind,]
+  test_data <- data[test_ind,]
+  model <- glm(formula=formula,family=family,data=train_data) #difference is in the formula (as no spline defined)
+  pred <- predict(model,newdata=test_data,type="response")
+  perf_out <- measure_peform(pred=pred,obser=test_data$outcome,prev=prev)
+  return(list("model" = model, "Peformance" = perf_out))
+}
+bayes_model <- function(data,formula,family){
+  train_size <- floor(nrow(data)*0.7)
+  train_ind <- sample(1:nrow(data),train_size)
+  test_ind <- setdiff(1:nrow(data),train_ind)
+  prev <- round(sum(data$outcome)/nrow(data),digits=2)
+  
+  train_data <- data[train_ind,]
+  test_data <- data[test_ind,]
+  model <- naiveBayes(outcome~.,data=train_data)
+  pred <- predict(model,newdata=test_data,type="raw")[,2]
+  perf_out <- measure_peform(pred=pred,obser=test_data$outcome,prev=prev)
+  return(list("model" = model, "Peformance" = perf_out))
 }
 
 
