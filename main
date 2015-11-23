@@ -1,0 +1,113 @@
+## Copyright (c) 2014, UF Shands, CCM Research Lab  
+# <date> 6th March 2014
+# Updated 23rd November 2015
+
+# Library requried
+library(e1071);library(verification);library(mgcv);library(ROCR)
+
+source(file="Rfunctions.R") # activate the user defined functions 
+
+### Function to clean the raw data
+# raw_data: tabular data with each row reprents an observation (patient data) and columns represent features 
+# features: R data frame with 2 columns (column 1: feature name, should match with field names in raw_data , column 2: feature type cat/num > categorical or numerical)
+# outcome: R vector with response , binary values only (0,1)
+# Output: 1)data: clean data 2) sel_features: features 
+data_pre_processing <- function(raw_data,features,outcome){
+
+  data_selected <- raw_data[,which(colnames(raw_data) %in% features[,1])]
+  sel_features  <- features
+  
+  proc_data <- data_selected; proc_data$outcome <- as.numeric(ifelse(outcome==1,1,0))
+  # genereate the proc_data matrix for futher analysis (removing NA Values and converting categorical values)
+  
+  for (i in 1:nrow(sel_features)){
+    j <- which(colnames(proc_data)==sel_features[i,1])
+    if (length(unique(proc_data[,j]))<2)
+      next  
+    if ((sel_features[i,2] == "num") && sum(is.na(proc_data[, j]))>0) {
+      # correct numerical missing values
+      rnd <- 2
+      if(mean(proc_data[,j],na.rm = TRUE)>5)
+        rnd <- 1
+      l <- sum(is.na(proc_data[, j])) ; temp <- round(runif(n = l,min = quantile(proc_data[,j],probs = 0.25,na.rm = TRUE),max = quantile(proc_data[,j],probs = 0.75,na.rm = TRUE)),rnd)
+      proc_data[is.na(proc_data[,j]),j]<- temp ; next
+    }
+    
+    if (sel_features[i,1] == "pr1" || sel_features[i,1] == "pr2"){       # correct pr1 missing value (special case to handle procedure codes)
+      d<-TrainProcedureFeature(proc_data[,j],outcome, 100)
+      proc_data[,j]<-d$procedures ; next
+    }      
+    if (sel_features[i,2] == "cat" && length(unique(proc_data[,j]))<=5){
+      if(sum(is.na(proc_data[,j]))>0){
+        levels(proc_data[,j]) <- c(levels(proc_data[,j]),"MISSING")
+        proc_data[is.na(proc_data[,j]),j]<- "MISSING" # correct categorical missing values with less than 10 levels
+        proc_data[,j] <- as.factor(proc_data[,j])
+      }else{
+        proc_data[,j] <- as.factor(proc_data[,j])
+      }
+      
+    } else if (sel_features[i,2] == "cat" && length(unique(proc_data[,j]))>5){   # correct categorical missing values
+      d<-TrainCategoricalFeature(proc_data[,j], response_matrix[,entry], 100, 2)          
+      proc_data[,j]<-d$d  
+    }
+  }
+    return(list("data"=proc_data,"sel_features"=sel_features))
+}
+
+### Function for PCA filtering
+# clean_data : cleaned data from after data_pre_processing funciton
+# pca_comp: number of principal components to be used
+# Output: data frame after PCA with pca_comb columns
+PCA_filtering <- function(clean_data,features,pca_comp,outcome){
+  proc_data <- clean_data[,which(colnames(clean_data)%in%features[,1])]
+  proc_data$outcome <- as.numeric(ifelse(outcome==1,1,0))
+  attach(proc_data)
+  pca_data <- prcomp(proc_data[,-outcome],scale=TRUE)
+  pca_out <- predict(pca_data)[,1:pca_comp]
+  colname <- array(dim=pca_comp+1)
+  for(i in 1:pca_comp){
+    colname[i] <- paste("pc_",i,sep="")
+  }
+  colname[pca_comp+1] <- "outcome"
+  pca_out <- as.data.frame(pca_out)
+  pca_out <- cbind(pca_out,proc_data$outcome)
+  colnames(pca_out) <- colname
+  return(pca_out)
+}
+
+### Function for performing lasso filtering
+# Output
+lasso_filtering <- function(clean_data,features,outcome){
+  proc_data <- clean_data[,which(colnames(clean_data)%in%features[,1])]
+  y <- as.numeric(ifelse(outcome==1,1,0))
+  fm <- binomial();fm$link <- "logit"
+  cvfit <- cv.glmnet(as.matrix(proc_data), y, family = "binomial")
+  var_lasso <- coef(cvfit, s = "lambda.min")
+  return(var_lasso)
+}
+
+
+### Funciton for model building
+prediction_model_function <- function(clean_data,s_lin,s_gam,rep_performance){
+  fm <- binomial();fm$link <- "logit"
+  results <- data.frame(matrix(ncol=4*4,nrow=rep_performance))
+  time_res <- data.frame(matrix(ncol=4,nrow=rep_performance))
+  colnames(results) <- c("Accuracy_GAMs","AUC","PPV","HL","Accuracy_LogReg","AUC","PPV","HL","Accuracy_NaiveBayes","AUC","PPV","HL","Accuracy_SVM","AUC","PPV","HL")
+  colnames(time_res) <- c("Time_GAMs","Time_Glm","Time_Naive","Time_SVM")
+  
+  for(i in 1:rep_performance){
+    print(i)
+    time_gam_i <- tic();    output1 <- gams_model(data=data,formula=s_gam,family=fm) ; time_gam <- toc()
+    print("Gams over") ; time_gam <- time_gam - time_gam_i
+    time_glm_i <- tic();    output2 <- glm_model(data=data,formula=s_lin,family=fm) ; time_glm <- toc()
+    print("Glm over") ; time_glm <- time_glm - time_glm_i
+    time_bayes_i <- tic();    output3 <- bayes_model(data=data,formula=s_lin,family=fm) ; time_bayes <- toc()
+    print("Naive over") ; time_bayes <- time_bayes - time_bayes_i
+    time_svm_i <- tic();    output4 <- svm_model(data=data) ; time_svm <- toc()
+    print("Naive over") ; time_svm <- time_svm - time_svm_i
+    results[i,] <- round(cbind(output1$Peformance,output2$Peformance,output3$Peformance,output4$Peformance),digits=3)
+    time_res[i,] <- round(cbind(time_gam,time_glm,time_bayes,time_svm))
+  }
+  return(list("perf"=results,"time"=time_res))
+}
+
